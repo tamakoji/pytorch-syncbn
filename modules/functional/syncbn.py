@@ -14,8 +14,7 @@ from __future__ import print_function
 import torch.cuda.comm as comm
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
-
-from ._syncbn._ext import syncbn as _lib_bn
+from ._csrc import _backend
 
 
 def _count_samples(x):
@@ -26,31 +25,32 @@ def _count_samples(x):
     return count
 
 
-def _check_contiguous(*args):
-    if not all([mod is None or mod.is_contiguous() for mod in args]):
-        raise ValueError("Non-contiguous input")
-
-
 class BatchNorm2dSyncFunc(Function):
 
-    @classmethod
-    def forward(cls, ctx, x, weight, bias, running_mean, running_var,
+    @staticmethod
+    def forward(ctx, x, weight, bias, running_mean, running_var,
                 extra, compute_stats=True, momentum=0.1, eps=1e-05):
+        def _parse_extra(ctx, extra):
+            ctx.is_master = extra["is_master"]
+            if ctx.is_master:
+                ctx.master_queue = extra["master_queue"]
+                ctx.worker_queues = extra["worker_queues"]
+                ctx.worker_ids = extra["worker_ids"]
+            else:
+                ctx.master_queue = extra["master_queue"]
+                ctx.worker_queue = extra["worker_queue"]
         # Save context
         if extra is not None:
-            cls._parse_extra(ctx, extra)
+            _parse_extra(ctx, extra)
         ctx.compute_stats = compute_stats
         ctx.momentum = momentum
         ctx.eps = eps
+        ctx.affine = weight is not None and bias is not None
         if ctx.compute_stats:
             N = _count_samples(x) * (ctx.master_queue.maxsize + 1)
             assert N > 1
-            num_features = running_mean.size(0)
             # 1. compute sum(x) and sum(x^2)
-            xsum = x.new().resize_(num_features)
-            xsqsum = x.new().resize_(num_features)
-            _check_contiguous(x, xsum, xsqsum)
-            _lib_bn.syncbn_sum_sqsum_cuda(x.detach(), xsum, xsqsum)
+            xsum, xsqsum = _backend.syncbn_sum_sqsum(x.detach())
             if ctx.is_master:
                 xsums, xsqsums = [xsum], [xsqsum]
                 # master : gatther all sum(x) and sum(x^2) from slaves
@@ -85,40 +85,20 @@ class BatchNorm2dSyncFunc(Function):
         else:
             mean, var = running_mean, running_var
 
-        output = x.new().resize_as_(x)
-        _check_contiguous(output, x, mean, var, weight, bias)
         # do batch norm forward
-        _lib_bn.syncbn_forward_cuda(
-            output, x, weight if weight is not None else x.new(),
-            bias if bias is not None else x.new(), mean, var, ctx.eps)
-        return output
+        z = _backend.syncbn_forward(x, weight, bias, mean, var,
+                                    ctx.affine, ctx.eps)
+        return z
 
     @staticmethod
     @once_differentiable
     def backward(ctx, dz):
         x, weight, bias, mean, var = ctx.saved_tensors
         dz = dz.contiguous()
-        if ctx.needs_input_grad[0]:
-            dx = dz.new().resize_as_(dz)
-        else:
-            dx = None
-        if ctx.needs_input_grad[1]:
-            dweight = dz.new().resize_as_(mean).zero_()
-        else:
-            dweight = None
-        if ctx.needs_input_grad[2]:
-            dbias = dz.new().resize_as_(mean).zero_()
-        else:
-            dbias = None
-        _check_contiguous(x, dz, weight, bias, mean, var)
 
         # 1. compute \sum(\frac{dJ}{dy_i}) and \sum(\frac{dJ}{dy_i}*\hat{x_i})
-        num_features = mean.size(0)
-        sum_dz = x.new().resize_(num_features)
-        sum_dz_xhat = x.new().resize_(num_features)
-        _check_contiguous(sum_dz, sum_dz_xhat)
-        _lib_bn.syncbn_backward_xhat_cuda(
-            dz, x, mean, var, sum_dz, sum_dz_xhat, ctx.eps)
+        sum_dz, sum_dz_xhat = _backend.syncbn_backward_xhat(
+            dz, x, mean, var, ctx.eps)
         if ctx.is_master:
             sum_dzs, sum_dz_xhats = [sum_dz], [sum_dz_xhat]
             # master : gatther from slaves
@@ -145,27 +125,12 @@ class BatchNorm2dSyncFunc(Function):
             ctx.worker_queue.task_done()
 
         # do batch norm backward
-        _lib_bn.syncbn_backard_cuda(
-            dz, x, weight if weight is not None else dz.new(),
-            bias if bias is not None else dz.new(),
-            mean, var, sum_dz, sum_dz_xhat,
-            dx if dx is not None else dz.new(),
-            dweight if dweight is not None else dz.new(),
-            dbias if dbias is not None else dz.new(), ctx.eps)
+        dx, dweight, dbias = _backend.syncbn_backward(
+            dz, x, weight, bias, mean, var, sum_dz, sum_dz_xhat,
+            ctx.affine, ctx.eps)
 
-        return dx, dweight, dbias, None, None, None, \
-            None, None, None, None, None
-
-    @staticmethod
-    def _parse_extra(ctx, extra):
-        ctx.is_master = extra["is_master"]
-        if ctx.is_master:
-            ctx.master_queue = extra["master_queue"]
-            ctx.worker_queues = extra["worker_queues"]
-            ctx.worker_ids = extra["worker_ids"]
-        else:
-            ctx.master_queue = extra["master_queue"]
-            ctx.worker_queue = extra["worker_queue"]
+        return dx, dweight, dbias, \
+            None, None, None, None, None, None
 
 batchnorm2d_sync = BatchNorm2dSyncFunc.apply
 

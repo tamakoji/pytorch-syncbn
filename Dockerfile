@@ -1,5 +1,5 @@
 # base container
-FROM nvidia/cuda:9.1-cudnn7-devel-ubuntu16.04
+FROM nvidia/cuda::10.0-devel-ubuntu18.04
 
 # update
 ENV DEBIAN_FRONTEND "noninteractive"
@@ -13,15 +13,16 @@ RUN apt-get install -y --no-install-recommends \
     less sudo ssh \
     build-essential \
     unzip git curl wget vim tree htop \
-    python3-dev python3-tk
+    python3-dev python3-tk \
+    ninja-build
 
 # python libs
 RUN curl https://bootstrap.pypa.io/get-pip.py | python3
 RUN pip3 install \
-    future six cffi numpy pillow tqdm Cython awscli
+    future six cffi numpy pillow tqdm Cython awscli ninja
 
 # install pytorch
-RUN pip3 install http://download.pytorch.org/whl/cu91/torch-0.4.0-cp35-cp35m-linux_x86_64.whl
+RUN pip3 install https://download.pytorch.org/whl/cu100/torch-1.0.0-cp36-cp36m-linux_x86_64.whl
 RUN pip3 install torchvision
 
 # clean up
@@ -46,11 +47,4 @@ RUN chsh -s /bin/bash ${user_name}
 USER ubuntu
 WORKDIR /home/ubuntu
 ENV HOME /home/ubuntu
-
-# install pytorch-syncbn
-RUN git clone https://github.com/tamakoji/pytorch-syncbn.git
-WORKDIR /home/ubuntu/pytorch-syncbn
-RUN PYTHON_CMD=python3 ./make_ext.sh
-RUN echo "export PYTHONPATH=\$PYTHONPATH:/home/ubuntu/pytorch-syncbn" >> ~/.bashrc
-
 

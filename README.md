@@ -2,6 +2,10 @@
 
 Tamaki Kojima(tamakoji@gmail.com)
 
+## Announcement
+
+**Pytorch 1.0 support**
+
 ## Overview
 This is alternative implementation of "Synchronized Multi-GPU Batch Normalization" which computes global stats across gpus instead of locally computed. SyncBN are getting important for those input image is large, and must use multi-gpu to increase the minibatch-size for the training.
 
@@ -16,11 +20,16 @@ The code was inspired by [Pytorch-Encoding](https://github.com/zhanghang1989/PyT
 ## Requirements
 For PyTorch, please refer to https://pytorch.org/
 
-NOTE : The code is tested only with PyTorch v0.4.0, CUDA9.1.85/CuDNN7.1.4 on ubuntu16.04
+NOTE : The code is tested only with PyTorch v1.0.0, CUDA10/CuDNN7.4.2 on ubuntu18.04
 
-(It can also be compiled and run on the JetsonTX2, but won't work as multi-gpu synchronnized BN.)
+It utilize Pytorch JIT mechanism to compile seamlessly, using ninja. Please install ninja-build before use.
 
-To install all dependencies using pip, run:
+```
+sudo apt-get install ninja-build
+```
+
+Also install all dependencies for python. For pip, run:
+
 
 ```
 pip install -U -r requirements.txt
@@ -28,10 +37,8 @@ pip install -U -r requirements.txt
 
 ## Build
 
-use `make_ext.sh` to build the extension. for example:
-```
-PYTHON_CMD=python3 ./make_ext.sh
-```
+There is no need to build. just run and JIT will take care.
+JIT and cpp extensions are supported after PyTorch0.4, however it is highly recommended to use PyTorch > 1.0 due to huge design changes.
 
 ## Usage
 
